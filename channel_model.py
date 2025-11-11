@@ -1,30 +1,157 @@
 """
 Channel Model for NOMA System
 =============================
-Implements Rayleigh fading channel with path loss for 2-user NOMA system.
-
-Key Concepts:
-- Rayleigh fading: Models multipath propagation in urban environments
-- Path loss: Signal attenuation due to distance
-- Channel State Information (CSI): |h|² values used for power allocation
+Implements multiple channel models:
+- Rayleigh fading (no line-of-sight)
+- Rician fading (with line-of-sight)
+- Frequency-selective channels (for OFDM)
+- Time-varying channels (user mobility with Jakes model)
 """
 
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend
 import matplotlib.pyplot as plt
+from scipy.special import jv  # Bessel function for Jakes model
 
 class NOMAChannelModel:
-    """Rayleigh fading channel model for NOMA system"""
+    """Advanced channel model for NOMA system with multiple fading types"""
     
     def __init__(self, config):
         self.config = config
         self.channel_gains = None
         self.channel_gains_dB = None
+        self.channel_coefficients = None  # Complex channel coefficients h
+        self.frequency_response = None     # For frequency-selective channels
         
+    def generate_rayleigh_fading(self, num_samples):
+        """Generate Rayleigh fading channel (no LOS)"""
+        # Rayleigh: h = h_real + j*h_imag (both Gaussian)
+        h_real = np.random.normal(0, 1/np.sqrt(2), num_samples)
+        h_imag = np.random.normal(0, 1/np.sqrt(2), num_samples)
+        return h_real + 1j * h_imag
+    
+    def generate_rician_fading(self, num_samples, k_factor_dB):
+        """
+        Generate Rician fading channel (with LOS)
+        
+        Args:
+            num_samples: Number of samples
+            k_factor_dB: K-factor in dB (ratio of LOS to NLOS power)
+        """
+        # Convert K-factor from dB to linear
+        k_linear = 10**(k_factor_dB / 10)
+        
+        # LOS component (deterministic)
+        los_power = k_linear / (1 + k_linear)
+        los_component = np.sqrt(los_power) * np.ones(num_samples, dtype=complex)
+        
+        # NLOS component (Rayleigh)
+        nlos_power = 1 / (1 + k_linear)
+        nlos_real = np.random.normal(0, np.sqrt(nlos_power/2), num_samples)
+        nlos_imag = np.random.normal(0, np.sqrt(nlos_power/2), num_samples)
+        nlos_component = nlos_real + 1j * nlos_imag
+        
+        return los_component + nlos_component
+    
+    def generate_time_varying_channel(self, num_samples, user_idx):
+        """
+        Generate time-varying channel using Jakes model (for user mobility)
+        
+        Args:
+            num_samples: Number of time samples
+            user_idx: User index (0 or 1)
+        """
+        if not self.config.temporal_correlation or self.config.max_doppler is None:
+            # Fall back to independent fading
+            if self.config.channel_type == 'rician':
+                return self.generate_rician_fading(num_samples, self.config.rician_k_factor)
+            else:
+                return self.generate_rayleigh_fading(num_samples)
+        
+        f_d = self.config.max_doppler[user_idx]  # Maximum Doppler frequency
+        T_s = self.config.sampling_time  # Sampling time
+        
+        # Jakes model: correlated fading using sum of sinusoids
+        # Simplified version using AR(1) model with correlation coefficient
+        rho = jv(0, 2 * np.pi * f_d * T_s)  # Temporal correlation coefficient
+        
+        # Initialize
+        h = np.zeros(num_samples, dtype=complex)
+        
+        if self.config.channel_type == 'rician':
+            # Rician with temporal correlation
+            k_linear = 10**(self.config.rician_k_factor / 10)
+            los_power = k_linear / (1 + k_linear)
+            nlos_power = 1 / (1 + k_linear)
+            
+            # LOS component (constant)
+            los_component = np.sqrt(los_power)
+            
+            # NLOS component (correlated)
+            nlos_real = np.random.normal(0, np.sqrt(nlos_power/2))
+            nlos_imag = np.random.normal(0, np.sqrt(nlos_power/2))
+            h[0] = los_component + (nlos_real + 1j * nlos_imag)
+            
+            for t in range(1, num_samples):
+                # AR(1) model for temporal correlation
+                innovation_real = np.random.normal(0, np.sqrt(nlos_power/2 * (1 - rho**2)))
+                innovation_imag = np.random.normal(0, np.sqrt(nlos_power/2 * (1 - rho**2)))
+                innovation = innovation_real + 1j * innovation_imag
+                
+                h[t] = los_component + rho * (h[t-1] - los_component) + innovation
+        else:
+            # Rayleigh with temporal correlation
+            h[0] = self.generate_rayleigh_fading(1)[0]
+            
+            for t in range(1, num_samples):
+                innovation = self.generate_rayleigh_fading(1)[0] * np.sqrt(1 - rho**2)
+                h[t] = rho * h[t-1] + innovation
+        
+        return h
+    
+    def generate_frequency_selective_channel(self, num_samples, user_idx):
+        """
+        Generate frequency-selective channel for OFDM (multipath)
+        
+        Args:
+            num_samples: Number of OFDM symbols
+            user_idx: User index
+        """
+        num_subcarriers = self.config.num_subcarriers
+        num_taps = 6  # Number of multipath taps (typical for urban environment)
+        
+        # Initialize frequency response
+        h_freq = np.zeros((num_samples, num_subcarriers), dtype=complex)
+        
+        for t in range(num_samples):
+            # Generate time-domain channel impulse response (multipath)
+            h_time = np.zeros(num_taps, dtype=complex)
+            
+            # Generate taps with exponential power delay profile
+            # For frequency-selective, we can use Rician for first tap if configured
+            use_rician_first_tap = (self.config.rician_k_factor > 0)
+            
+            for tap in range(num_taps):
+                if use_rician_first_tap and tap == 0:
+                    # First tap has LOS (Rician)
+                    h_tap = self.generate_rician_fading(1, self.config.rician_k_factor)[0]
+                else:
+                    # Other taps are Rayleigh
+                    h_tap = self.generate_rayleigh_fading(1)[0]
+                
+                # Exponential power delay profile
+                power_delay = np.exp(-tap / 2.0)
+                h_time[tap] = h_tap * np.sqrt(power_delay)
+            
+            # Convert to frequency domain (FFT)
+            h_freq[t, :] = np.fft.fft(h_time, num_subcarriers)
+        
+        return h_freq
+    
     def generate_channels(self):
         """
-        Generate Rayleigh fading channel realizations
+        Generate channel realizations based on configured channel type
         
         Returns:
             channel_gains: Linear channel gains |h|² for both users
@@ -35,21 +162,42 @@ class NOMAChannelModel:
         
         # Initialize arrays
         self.channel_gains = np.zeros((num_users, num_samples))
+        self.channel_coefficients = np.zeros((num_users, num_samples), dtype=complex)
         
-        # Generate Rayleigh fading for each user
-        for user in range(num_users):
-            # Rayleigh fading: h = h_real + j*h_imag (both Gaussian)
-            h_real = np.random.normal(0, 1/np.sqrt(2), num_samples)
-            h_imag = np.random.normal(0, 1/np.sqrt(2), num_samples)
-            
-            # Channel power gain |h|²
-            channel_power = h_real**2 + h_imag**2
-            
-            # Apply path loss
-            self.channel_gains[user, :] = channel_power / self.config.path_loss[user]
+        # Generate channels based on type
+        if self.config.channel_type == 'frequency_selective':
+            # OFDM frequency-selective channel
+            self.frequency_response = []
+            for user in range(num_users):
+                h_freq = self.generate_frequency_selective_channel(num_samples, user)
+                self.frequency_response.append(h_freq)
+                # Use average power across subcarriers
+                channel_power = np.mean(np.abs(h_freq)**2, axis=1)
+                self.channel_gains[user, :] = channel_power / self.config.path_loss[user]
+                # Store average channel coefficient
+                self.channel_coefficients[user, :] = np.mean(h_freq, axis=1) / np.sqrt(self.config.path_loss[user])
+        else:
+            # Flat fading channels (Rayleigh or Rician)
+            for user in range(num_users):
+                if self.config.temporal_correlation:
+                    # Time-varying channel with mobility
+                    h = self.generate_time_varying_channel(num_samples, user)
+                else:
+                    # Static or independent fading
+                    if self.config.channel_type == 'rician':
+                        h = self.generate_rician_fading(num_samples, self.config.rician_k_factor)
+                    else:
+                        h = self.generate_rayleigh_fading(num_samples)
+                
+                # Store complex channel coefficients
+                self.channel_coefficients[user, :] = h / np.sqrt(self.config.path_loss[user])
+                
+                # Channel power gain |h|²
+                channel_power = np.abs(h)**2
+                self.channel_gains[user, :] = channel_power / self.config.path_loss[user]
         
         # Convert to dB for visualization
-        self.channel_gains_dB = 10 * np.log10(self.channel_gains)
+        self.channel_gains_dB = 10 * np.log10(self.channel_gains + 1e-10)  # Avoid log(0)
         
         return self.channel_gains, self.channel_gains_dB
     

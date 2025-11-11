@@ -2,12 +2,6 @@
 NOMA Power Allocation and SINR Calculator
 =========================================
 Implements different power allocation schemes and calculates SINR for NOMA users.
-
-Key NOMA Principles:
-- Strong user (better channel) gets LESS power
-- Weak user (worse channel) gets MORE power  
-- Strong user decodes weak user's signal first, then its own (SIC)
-- Weak user decodes its signal directly
 """
 
 import numpy as np

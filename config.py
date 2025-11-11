@@ -1,8 +1,6 @@
 """
 NOMA System Configuration File
 ==============================
-This file contains all the input parameters for the NOMA simulation.
-Modify these values to test different scenarios.
 """
 
 import numpy as np
@@ -35,6 +33,31 @@ class NOMAConfig:
         self.path_loss_exponent = 4.0     # Free space + shadowing
         self.speed_of_light = 3e8         # m/s
         
+        # CSI Channel Model Parameters
+        self.channel_type = 'rayleigh'    # 'rayleigh', 'rician', 'frequency_selective'
+        self.rician_k_factor = 3.0        # K-factor for Rician fading (dB) - LOS component strength
+        self.user_velocities = [5, 10]    # User velocities (m/s) for time-varying channels
+        self.sampling_time = 1e-3         # Sampling time (seconds) for time-varying channels
+        
+        # OFDM Parameters (for frequency-selective channels)
+        self.num_subcarriers = 64         # Number of OFDM subcarriers
+        self.cp_length = 16               # Cyclic prefix length
+        
+        # Channel Estimation Parameters
+        self.pilot_ratio = 0.1            # Ratio of pilot symbols to data symbols
+        self.estimation_method = 'LS'     # 'LS', 'MMSE', 'DFT'
+        self.pilot_pattern = 'uniform'   # 'uniform' or 'block'
+        
+        # CSI Imperfection Parameters
+        self.estimation_error_variance = 0.01  # Variance of estimation error (Gaussian noise)
+        self.quantization_bits = 8        # Number of feedback bits (4, 6, 8)
+        self.feedback_delay = 0           # Feedback delay in samples
+        self.temporal_correlation = True  # Enable temporal correlation (Jakes model)
+        self.max_doppler = None           # Maximum Doppler frequency (will be calculated)
+        
+        # SNR for Channel Estimation
+        self.pilot_snr_dB = 20            # SNR for pilot symbols (dB)
+        
         # Power Allocation Schemes to Compare
         self.power_schemes = {
             'fixed': [0.4, 0.6],          # [User1_power, User2_power] - NOMA principle
@@ -57,6 +80,16 @@ class NOMAConfig:
             # Free space path loss: (4πdf/c)²
             path_loss_linear = (4 * np.pi * distance * self.carrier_frequency / self.speed_of_light)**2
             self.path_loss.append(path_loss_linear)
+        
+        # Calculate maximum Doppler frequency for each user
+        if self.temporal_correlation:
+            self.max_doppler = []
+            for velocity in self.user_velocities:
+                f_d = (velocity * self.carrier_frequency) / self.speed_of_light
+                self.max_doppler.append(f_d)
+        
+        # Calculate pilot SNR in linear scale
+        self.pilot_snr_linear = 10**(self.pilot_snr_dB / 10)
     
     def get_summary(self):
         """Return a summary of all configuration parameters"""
