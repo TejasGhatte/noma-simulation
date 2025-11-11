@@ -272,8 +272,14 @@ class NOMAChannelModel:
         axes[1, 0].grid(True, alpha=0.3)
         
         # Plot 4: Channel quality comparison
-        avg_gain_user1 = np.mean(self.channel_gains_dB[0, :])
-        avg_gain_user2 = np.mean(self.channel_gains_dB[1, :])
+        # === RECTIFIED CODE ===
+        # Average in linear space first, then convert to dB (mathematically correct)
+        avg_gain_user1_linear = np.mean(self.channel_gains[0, :])
+        avg_gain_user2_linear = np.mean(self.channel_gains[1, :])
+
+        avg_gain_user1 = 10 * np.log10(avg_gain_user1_linear)
+        avg_gain_user2 = 10 * np.log10(avg_gain_user2_linear)
+        # === END OF RECTIFICATION ===
         
         users = ['User 1\n(Near)', 'User 2\n(Far)']
         avg_gains = [avg_gain_user1, avg_gain_user2]
@@ -312,12 +318,19 @@ class NOMAChannelModel:
         stats = {}
         for user in range(self.config.num_users):
             user_key = f'user_{user+1}'
+            
+            # === RECTIFIED LOGIC ===
+            # Calculate dB of the mean linear gain, not mean of the dB gains
+            mean_linear_gain = np.mean(self.channel_gains[user, :])
+            mean_dB_gain = 10 * np.log10(mean_linear_gain + 1e-20)
+            
             stats[user_key] = {
-                'mean_dB': np.mean(self.channel_gains_dB[user, :]),
+                'mean_dB': mean_dB_gain, # Use the corrected value
                 'std_dB': np.std(self.channel_gains_dB[user, :]),
                 'median_dB': np.median(self.channel_gains_dB[user, :]),
                 'min_dB': np.min(self.channel_gains_dB[user, :]),
                 'max_dB': np.max(self.channel_gains_dB[user, :])
             }
+            # === END RECTIFICATION ===
         
         return stats

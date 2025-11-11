@@ -30,7 +30,7 @@ class NOMAConfig:
                                          # User 2: 500m (far user)
         
         # Channel Model Parameters
-        self.path_loss_exponent = 4.0     # Free space + shadowing
+        self.path_loss_exponent = 3.0     # Urban environment (reduced from 4.0 for realistic SNR)
         self.speed_of_light = 3e8         # m/s
         
         # CSI Channel Model Parameters
@@ -60,7 +60,7 @@ class NOMAConfig:
         
         # Power Allocation Schemes to Compare
         self.power_schemes = {
-            'fixed': [0.4, 0.6],          # [User1_power, User2_power] - NOMA principle
+            'fixed': [0.7, 0.3],          # [User1_power, User2_power] - NOMA principle
             'equal': [0.5, 0.5],          # Equal power allocation
             'adaptive': 'optimize'         # Will be calculated based on channel
         }

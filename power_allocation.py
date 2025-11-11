@@ -38,51 +38,43 @@ class NOMASystem:
         
         # Check if power is static or dynamic
         is_dynamic = isinstance(alpha_1, np.ndarray)
-        
+
         # Initialize SINR arrays
         sinr_user1_linear = np.zeros(num_samples)
         sinr_user2_linear = np.zeros(num_samples)
         
-        for t in range(num_samples):
-            h1_sq = self.channel_gains[0, t]  # |h1|² (Near user)
-            h2_sq = self.channel_gains[1, t]  # |h2|² (Far user)
-            
-            # Get power for this time sample t
-            P1_t = P1[t] if is_dynamic else P1
-            P2_t = P2[t] if is_dynamic else P2
-            
-            # Determine who is stronger user (better channel) *instantaneously*
-            if h1_sq >= h2_sq:
-                # User 1 is stronger
-                h_strong, h_weak = h1_sq, h2_sq
-                P_strong, P_weak = P1_t, P2_t
-            else:
-                # User 2 is stronger  
-                h_strong, h_weak = h2_sq, h1_sq
-                P_strong, P_weak = P2_t, P1_t
-            
-            # ===
-            # BUG FIX: The original code had these two formulas swapped.
-            # ===
-            
-            # Strong user (post-SIC): Decodes its own signal interference-free
-            sinr_strong_user = (P_strong * h_strong) / self.config.noise_power_watts
-            
-            # Weak user: Treats the strong user's signal as noise
-            sinr_weak_user = (P_weak * h_weak) / (P_strong * h_weak + self.config.noise_power_watts)
-            
-            # === END OF FIX ===
-
-            # Assign back to correct users
-            if h1_sq >= h2_sq:
-                # User 1 was strong
-                sinr_user1_linear[t] = sinr_strong_user
-                sinr_user2_linear[t] = sinr_weak_user
-            else:
-                # User 2 was strong
-                sinr_user1_linear[t] = sinr_weak_user
-                sinr_user2_linear[t] = sinr_strong_user
+        # Get channel gains (h_sq) for both users
+        # User 1 is *always* the strong user (Near)
+        # User 2 is *always* the weak user (Far)
+        h1_sq = self.channel_gains[0, :]  # User 1 (Strong, Near)
+        h2_sq = self.channel_gains[1, :]  # User 2 (Weak, Far)
         
+        # Get noise power
+        noise = self.config.noise_power_watts
+        
+        if is_dynamic:
+            # Handle dynamic power arrays
+            P1_t = P1
+            P2_t = P2
+        else:
+            # Handle static power scalars by creating an array
+            P1_t = P1 * np.ones(num_samples)
+            P2_t = P2 * np.ones(num_samples)
+
+        # === RECTIFIED SINR CALCULATION (FIXED ROLES) ===
+        
+        # User 1 (Strong User) performs SIC.
+        # It decodes its own signal interference-free.
+        # Add 1e-12 to noise to prevent divide-by-zero if noise is 0.
+        sinr_user1_linear = (P1_t * h1_sq) / (noise + 1e-12)
+
+        # User 2 (Weak User) does not perform SIC.
+        # It treats User 1's signal as interference.
+        interference_user2 = P1_t * h2_sq
+        sinr_user2_linear = (P2_t * h2_sq) / (interference_user2 + noise + 1e-12)
+        
+        # === END OF RECTIFICATION ===
+
         # Convert to dB
         sinr_user1_dB = 10 * np.log10(sinr_user1_linear + 1e-10)
         sinr_user2_dB = 10 * np.log10(sinr_user2_linear + 1e-10)
@@ -109,7 +101,6 @@ class NOMASystem:
         }
         
         return results
-    
     def adaptive_power_allocation_dynamic(self):
         """
         Dynamic adaptive power allocation based on *instantaneous* channel
