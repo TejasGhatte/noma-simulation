@@ -23,65 +23,80 @@ class NOMASystem:
         
         Args:
             power_allocation: [alpha_1, alpha_2] where alpha_1 + alpha_2 = 1
+                              Can be scalars or numpy arrays for dynamic allocation.
             scheme_name: Name of the allocation scheme
             
         Returns:
-            dict: SINR values for both users
+            dict: SINR values and performance metrics for both users
         """
         alpha_1, alpha_2 = power_allocation
         num_samples = self.config.num_time_samples
         
-        # Allocated powers
+        # Allocated powers (can be scalar or array)
         P1 = alpha_1 * self.config.total_power  # Power for User 1
         P2 = alpha_2 * self.config.total_power  # Power for User 2
+        
+        # Check if power is static or dynamic
+        is_dynamic = isinstance(alpha_1, np.ndarray)
         
         # Initialize SINR arrays
         sinr_user1_linear = np.zeros(num_samples)
         sinr_user2_linear = np.zeros(num_samples)
         
         for t in range(num_samples):
-            h1_sq = self.channel_gains[0, t]  # |h1|²
-            h2_sq = self.channel_gains[1, t]  # |h2|²
+            h1_sq = self.channel_gains[0, t]  # |h1|² (Near user)
+            h2_sq = self.channel_gains[1, t]  # |h2|² (Far user)
             
-            # Determine who is stronger user (better channel)
+            # Get power for this time sample t
+            P1_t = P1[t] if is_dynamic else P1
+            P2_t = P2[t] if is_dynamic else P2
+            
+            # Determine who is stronger user (better channel) *instantaneously*
             if h1_sq >= h2_sq:
                 # User 1 is stronger
-                strong_user, weak_user = 1, 2
                 h_strong, h_weak = h1_sq, h2_sq
-                P_strong, P_weak = P1, P2
+                P_strong, P_weak = P1_t, P2_t
             else:
                 # User 2 is stronger  
-                strong_user, weak_user = 2, 1
                 h_strong, h_weak = h2_sq, h1_sq
-                P_strong, P_weak = P2, P1
+                P_strong, P_weak = P2_t, P1_t
             
-            # NOMA SINR Calculations:
+            # ===
+            # BUG FIX: The original code had these two formulas swapped.
+            # ===
             
-            # Strong user decodes weak user's message first
-            # Then decodes its own message (SIC - Successive Interference Cancellation)
-            sinr_strong_user = (P_strong * h_strong) / (P_weak * h_strong + self.config.noise_power_watts)
+            # Strong user (post-SIC): Decodes its own signal interference-free
+            sinr_strong_user = (P_strong * h_strong) / self.config.noise_power_watts
             
-            # Weak user decodes its message directly (assumes perfect SIC by strong user)
-            sinr_weak_user = (P_weak * h_weak) / self.config.noise_power_watts
+            # Weak user: Treats the strong user's signal as noise
+            sinr_weak_user = (P_weak * h_weak) / (P_strong * h_weak + self.config.noise_power_watts)
             
+            # === END OF FIX ===
+
             # Assign back to correct users
-            if strong_user == 1:
+            if h1_sq >= h2_sq:
+                # User 1 was strong
                 sinr_user1_linear[t] = sinr_strong_user
                 sinr_user2_linear[t] = sinr_weak_user
             else:
+                # User 2 was strong
                 sinr_user1_linear[t] = sinr_weak_user
                 sinr_user2_linear[t] = sinr_strong_user
         
         # Convert to dB
-        sinr_user1_dB = 10 * np.log10(sinr_user1_linear + 1e-10)  # Avoid log(0)
+        sinr_user1_dB = 10 * np.log10(sinr_user1_linear + 1e-10)
         sinr_user2_dB = 10 * np.log10(sinr_user2_linear + 1e-10)
         
         # Calculate throughput using Shannon formula (simplified)
         throughput_user1 = self.config.bandwidth * np.log2(1 + sinr_user1_linear) / 1e6  # Mbps
         throughput_user2 = self.config.bandwidth * np.log2(1 + sinr_user2_linear) / 1e6  # Mbps
         
+        # Get average power for report (if dynamic)
+        avg_alpha_1 = np.mean(alpha_1)
+        avg_alpha_2 = np.mean(alpha_2)
+
         results = {
-            'power_allocation': power_allocation,
+            'power_allocation': [avg_alpha_1, avg_alpha_2],
             'sinr_user1_dB': sinr_user1_dB,
             'sinr_user2_dB': sinr_user2_dB,
             'throughput_user1_Mbps': throughput_user1,
@@ -95,21 +110,64 @@ class NOMASystem:
         
         return results
     
-    def adaptive_power_allocation(self):
+    def adaptive_power_allocation_dynamic(self):
         """
-        Simple adaptive power allocation based on average channel conditions
+        Dynamic adaptive power allocation based on *instantaneous* channel
         
-        Strategy: Give more power to the user with worse average channel
+        Strategy: Give more power to the user with worse average channel (NOMA principle).
+        This uses average channel conditions to determine the base allocation,
+        then adjusts slightly based on instantaneous variations.
         """
-        avg_h1 = np.mean(self.channel_gains[0, :])
-        avg_h2 = np.mean(self.channel_gains[1, :])
+        num_samples = self.config.num_time_samples
+        h1_sq = self.channel_gains[0, :]
+        h2_sq = self.channel_gains[1, :]
         
-        if avg_h1 > avg_h2:
-            # User 1 has better channel, gets less power
-            alpha_1, alpha_2 = 0.3, 0.7
+        # Calculate average channel gains to determine base allocation
+        avg_h1 = np.mean(h1_sq)
+        avg_h2 = np.mean(h2_sq)
+        
+        # Verify channel gains are different (if not, adaptive won't work well)
+        if abs(avg_h1 - avg_h2) < 1e-15:
+            print("⚠️  WARNING: Channel gains are identical! Adaptive scheme may not work correctly.")
+            print(f"   User 1 avg gain: {10*np.log10(avg_h1 + 1e-10):.1f} dB")
+            print(f"   User 2 avg gain: {10*np.log10(avg_h2 + 1e-10):.1f} dB")
+        
+        # Base NOMA allocation: weak user (worse average channel) gets more power
+        # Use a more aggressive power split for better performance
+        if avg_h1 >= avg_h2:
+            # User 1 is stronger on average, User 2 is weaker
+            base_alpha_1 = 0.25  # Strong user gets less power (more aggressive)
+            base_alpha_2 = 0.75  # Weak user gets more power
         else:
-            # User 2 has better channel, gets less power
-            alpha_1, alpha_2 = 0.7, 0.3
+            # User 2 is stronger on average, User 1 is weaker
+            base_alpha_1 = 0.75  # Weak user gets more power
+            base_alpha_2 = 0.25  # Strong user gets less power
+        
+        # Add small instantaneous adjustments (max ±5% variation)
+        alpha_1 = np.zeros(num_samples)
+        alpha_2 = np.zeros(num_samples)
+        
+        for t in range(num_samples):
+            # Instantaneous channel ratio
+            total_power = h1_sq[t] + h2_sq[t]
+            if total_power > 0:
+                ratio = h1_sq[t] / total_power
+                # Adjust: if user 1 is instantaneously stronger, give it slightly less power
+                adjustment = (ratio - 0.5) * 0.1  # Max ±5% adjustment (reduced from 10%)
+                alpha_1[t] = base_alpha_1 - adjustment
+                alpha_2[t] = base_alpha_2 + adjustment
+            else:
+                alpha_1[t] = base_alpha_1
+                alpha_2[t] = base_alpha_2
+            
+            # Ensure power allocation sums to 1 and is in valid range
+            total = alpha_1[t] + alpha_2[t]
+            if total > 0:
+                alpha_1[t] = max(0.1, min(0.9, alpha_1[t] / total))
+                alpha_2[t] = 1.0 - alpha_1[t]
+            else:
+                alpha_1[t] = base_alpha_1
+                alpha_2[t] = base_alpha_2
         
         return [alpha_1, alpha_2]
     
@@ -132,8 +190,8 @@ class NOMASystem:
             self.config.power_schemes['equal'], 'Equal'
         )
         
-        # Adaptive scheme
-        adaptive_allocation = self.adaptive_power_allocation()
+        # Adaptive scheme (use the new dynamic one)
+        adaptive_allocation = self.adaptive_power_allocation_dynamic()
         results['Adaptive'] = self.calculate_sinr_for_scheme(
             adaptive_allocation, 'Adaptive'
         )

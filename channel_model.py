@@ -164,6 +164,10 @@ class NOMAChannelModel:
         self.channel_gains = np.zeros((num_users, num_samples))
         self.channel_coefficients = np.zeros((num_users, num_samples), dtype=complex)
         
+        # This will hold the complex channel coefficients *before* path loss
+        # We need to apply path loss *after* all channel types are generated
+        h_fading = np.zeros((num_users, num_samples), dtype=complex)
+        
         # Generate channels based on type
         if self.config.channel_type == 'frequency_selective':
             # OFDM frequency-selective channel
@@ -171,11 +175,8 @@ class NOMAChannelModel:
             for user in range(num_users):
                 h_freq = self.generate_frequency_selective_channel(num_samples, user)
                 self.frequency_response.append(h_freq)
-                # Use average power across subcarriers
-                channel_power = np.mean(np.abs(h_freq)**2, axis=1)
-                self.channel_gains[user, :] = channel_power / self.config.path_loss[user]
-                # Store average channel coefficient
-                self.channel_coefficients[user, :] = np.mean(h_freq, axis=1) / np.sqrt(self.config.path_loss[user])
+                # Store average complex gain
+                h_fading[user, :] = np.mean(h_freq, axis=1)
         else:
             # Flat fading channels (Rayleigh or Rician)
             for user in range(num_users):
@@ -189,15 +190,36 @@ class NOMAChannelModel:
                     else:
                         h = self.generate_rayleigh_fading(num_samples)
                 
-                # Store complex channel coefficients
-                self.channel_coefficients[user, :] = h / np.sqrt(self.config.path_loss[user])
-                
-                # Channel power gain |h|²
-                channel_power = np.abs(h)**2
-                self.channel_gains[user, :] = channel_power / self.config.path_loss[user]
+                # Store complex channel fading
+                h_fading[user, :] = h
         
-        # Convert to dB for visualization
-        self.channel_gains_dB = 10 * np.log10(self.channel_gains + 1e-10)  # Avoid log(0)
+        # ===
+        # BUG FIX: Apply path loss attenuation directly to channel coefficients
+        # Path loss scale factor: sqrt(1/path_loss) for amplitude attenuation
+        # This ensures different users have different average channel gains based on distance
+        # ===
+        # Pre-calculate path losses in dB for verification
+        path_losses_dB = [10 * np.log10(pl) for pl in self.config.path_loss]
+        
+        for user in range(num_users):
+            # Get path loss for this user (should be different for each user based on distance)
+            path_loss_linear = self.config.path_loss[user]
+            
+            # Calculate path loss scale factor for amplitude attenuation
+            # path_loss_scale = sqrt(1/path_loss) ensures average power is reduced by path_loss
+            path_loss_scale = np.sqrt(1.0 / path_loss_linear)
+            
+            # Apply path loss attenuation to complex channel coefficients
+            # Multiply fading by path_loss_scale to attenuate the signal
+            self.channel_coefficients[user, :] = h_fading[user, :] * path_loss_scale
+            
+            # Calculate channel power gains (already includes path loss attenuation)
+            self.channel_gains[user, :] = np.abs(self.channel_coefficients[user, :])**2
+        
+        # Convert to dB for visualization — handle zeros without masking tiny but different values
+        eps = np.finfo(float).tiny  # machine tiny (≈1e-308), much smaller than 1e-10
+        safe_gains = np.maximum(self.channel_gains, eps)
+        self.channel_gains_dB = 10.0 * np.log10(safe_gains)
         
         return self.channel_gains, self.channel_gains_dB
     

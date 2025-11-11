@@ -82,14 +82,20 @@ class ChannelEstimator:
         # First get LS estimate
         h_ls = self.ls_estimation(received_pilots, pilot_symbols)
         
-        # Noise variance (from SNR)
-        sigma_n_sq = 1.0 / self.config.pilot_snr_linear
+        # MMSE estimation: h_MMSE = R_hh / (R_hh + sigma_n^2) * h_LS
+        # where R_hh is channel covariance and sigma_n^2 is noise variance
         
-        # Channel covariance (assume unit variance for simplicity)
-        # In practice, this would be estimated from channel statistics
-        R_hh = 1.0  # Channel variance
+        # Estimate channel variance from LS estimate
+        signal_power_est = np.mean(np.abs(h_ls)**2)
+        
+        # Use a more robust approach: assume channel variance matches LS estimate power
+        # and noise variance is the system noise power
+        R_hh = max(signal_power_est, 1e-12)  # Channel variance (avoid zero)
+        sigma_n_sq = self.config.noise_power_watts  # Noise variance
         
         # MMSE filter coefficient
+        # When SNR is high (sigma_n_sq << R_hh), mmse_gain -> 1 (MMSE ≈ LS)
+        # When SNR is low (sigma_n_sq >> R_hh), mmse_gain -> R_hh/sigma_n_sq (MMSE shrinks estimate)
         mmse_gain = R_hh / (R_hh + sigma_n_sq)
         
         # Apply MMSE filter
@@ -161,8 +167,13 @@ class ChannelEstimator:
         h_true_pilots = true_channel[pilot_pos]
         
         # Generate received signal: y = h * x + n
+        # ===
+        # BUG FIX: Use the system's actual noise power from config,
+        # not the misleading pilot_snr_linear.
+        # ===
         if noise_power is None:
-            noise_power = 1.0 / self.config.pilot_snr_linear
+            # Use the correct system noise power
+            noise_power = self.config.noise_power_watts 
         
         noise = np.random.normal(0, np.sqrt(noise_power/2), num_pilots) + \
                 1j * np.random.normal(0, np.sqrt(noise_power/2), num_pilots)

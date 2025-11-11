@@ -49,7 +49,7 @@ class NOMAConfig:
         self.pilot_pattern = 'uniform'   # 'uniform' or 'block'
         
         # CSI Imperfection Parameters
-        self.estimation_error_variance = 0.01  # Variance of estimation error (Gaussian noise)
+        self.estimation_error_variance = 0.0  # FIX: Set to 0.0. Error is already simulated.
         self.quantization_bits = 8        # Number of feedback bits (4, 6, 8)
         self.feedback_delay = 0           # Feedback delay in samples
         self.temporal_correlation = True  # Enable temporal correlation (Jakes model)
@@ -72,14 +72,36 @@ class NOMAConfig:
         """Calculate parameters derived from basic inputs"""
         
         # Noise power calculation
-        self.noise_power_watts = 10**((self.noise_density - 30)/10) * self.bandwidth
+        # noise_density is in dBm/Hz, convert to W/Hz: 10^((dBm - 30)/10)
+        # Then multiply by bandwidth to get total noise power in Watts
+        noise_power_density_watts_per_hz = 10**((self.noise_density - 30)/10)  # Convert dBm/Hz to W/Hz
+        self.noise_power_watts = noise_power_density_watts_per_hz * self.bandwidth  # Total noise power in W
+        
+        # Verification: noise power should be very small (around 10^-13 to 10^-14 W for typical values)
+        if self.noise_power_watts > 1e-10:
+            print(f"⚠️  WARNING: Noise power seems too large: {self.noise_power_watts:.2e} W")
         
         # Path loss calculation for each user
+        # ===
+        # BUG FIX: The original code used the Friis formula (exponent=2)
+        # This fix uses the log-distance model with the configured exponent
+        # ===
         self.path_loss = []
+        
+        # Calculate free space path loss at a reference distance (d0) of 1 meter
+        # PL(d_0) = (4 * pi * d_0 * f / c)^2
+        pl_0_linear = (4 * np.pi * 1.0 * self.carrier_frequency / self.speed_of_light)**2
+        
         for distance in self.user_distances:
-            # Free space path loss: (4πdf/c)²
-            path_loss_linear = (4 * np.pi * distance * self.carrier_frequency / self.speed_of_light)**2
+            if distance <= 1.0:
+                # Use reference path loss
+                path_loss_linear = pl_0_linear
+            else:
+                # Use log-distance path loss model: PL(d) = PL(d_0) * (d/d_0)^n
+                path_loss_linear = pl_0_linear * (distance / 1.0)**self.path_loss_exponent
+            
             self.path_loss.append(path_loss_linear)
+        # === END OF FIX ===
         
         # Calculate maximum Doppler frequency for each user
         if self.temporal_correlation:

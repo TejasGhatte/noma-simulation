@@ -105,7 +105,6 @@ def generate_performance_report(config, channel_stats, noma_results):
     for scheme_name, results in noma_results.items():
         alpha1, alpha2 = results['power_allocation']
         print(f"   • {scheme_name}: User1={alpha1*100:.0f}%, User2={alpha2*100:.0f}%")
-
 def main():
     """Main simulation function"""
     
@@ -115,6 +114,25 @@ def main():
     print("\n🔧 Step 1: Loading Configuration...")
     config = NOMAConfig()
     print(config.get_summary())
+    
+    # === Calculate the true system SNR (P_tx / N_0) in dB ===
+    # This is the transmit SNR before path loss
+    # Note: Actual received SNR at users will be much lower due to path loss
+    # Verify both values are in linear scale (Watts) before division
+    if config.total_power <= 0 or config.noise_power_watts <= 0:
+        raise ValueError(f"Invalid power values: P_tx={config.total_power} W, N_0={config.noise_power_watts:.2e} W")
+    
+    snr_linear_system = config.total_power / config.noise_power_watts
+    snr_dB_system = 10 * np.log10(snr_linear_system)
+    
+    # Calculate expected received SNR for each user (accounting for path loss)
+    received_snr_user1_dB = snr_dB_system - 10*np.log10(config.path_loss[0])
+    received_snr_user2_dB = snr_dB_system - 10*np.log10(config.path_loss[1])
+    
+    print(f"   • System Transmit SNR (P_tx/N_0): {snr_dB_system:.1f} dB")
+    print(f"   • Expected Received SNR - User 1: {received_snr_user1_dB:.1f} dB")
+    print(f"   • Expected Received SNR - User 2: {received_snr_user2_dB:.1f} dB")
+    print(f"     (Note: These are approximate, actual values depend on fading)")
     
     # Step 2: Generate Channel Model
     print_separator("STEP 2: GENERATING CHANNEL MODEL")
@@ -147,7 +165,9 @@ def main():
     print(f"   • Estimation Error Variance: {config.estimation_error_variance}")
     
     csi_analyzer = CSIAnalyzer(config, channel_model)
-    csi_analyzer.analyze_csi()
+    
+    # FIX: Pass the correct system SNR to the analyzer
+    csi_analyzer.analyze_csi(snr_dB_system)
     
     print("✅ CSI analysis completed")
     csi_analyzer.print_csi_report()
